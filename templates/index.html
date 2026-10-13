@@ -1,0 +1,13 @@
+﻿<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Users</title></head>
+<body>
+<h1>Users List</h1>
+<a href="/register">Register</a>
+<ul>
+{% for u in users %}
+<li>{{ u[1] }} ({{ u[2] }})</li>
+{% endfor %}
+</ul>
+</body>
+</html>

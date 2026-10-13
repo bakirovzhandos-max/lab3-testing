@@ -1,0 +1,50 @@
+﻿services:
+  web-gw0:
+    build: .
+    image: lab3-app
+    environment:
+      DB_PATH: /data/users-gw0.db
+    volumes:
+      - database:/data
+
+  web-gw1:
+    build: .
+    image: lab3-app
+    environment:
+      DB_PATH: /data/users-gw1.db
+    volumes:
+      - database:/data
+
+  selenium-hub:
+    image: selenium/hub:4.27.0-20241204
+
+  chrome:
+    image: selenium/node-chrome:4.27.0-20241204
+    shm_size: 2gb
+    depends_on:
+      - selenium-hub
+    environment:
+      SE_EVENT_BUS_HOST: selenium-hub
+      SE_EVENT_BUS_PUBLISH_PORT: "4442"
+      SE_EVENT_BUS_SUBSCRIBE_PORT: "4443"
+      SE_NODE_MAX_SESSIONS: "2"
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+
+  tests:
+    build: .
+    image: lab3-app
+    environment:
+      PYTEST_XDIST_AUTO_NUM_WORKERS: "2"
+    depends_on:
+      - web-gw0
+      - web-gw1
+      - chrome
+    volumes:
+      - database:/data
+      - ./reports:/reports
+    command: >
+      sh -c "python wait_services.py &&
+      python -m pytest -v --junitxml=/reports/results.xml"
+
+volumes:
+  database:
