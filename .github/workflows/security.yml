@@ -1,0 +1,117 @@
+name: Lab5 Security Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app.py"
+      - "templates/**"
+      - "security_checks.py"
+      - ".github/workflows/security.yml"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install flask==3.1.0 requests==2.32.3 bandit==1.8.3
+          mkdir -p security_reports
+
+      - name: Run Bandit SAST
+        run: |
+          bandit app.py logger.py -f json \
+            -o security_reports/bandit.json --exit-zero
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("security_reports/bandit.json").read_text())
+          assert not report.get("errors"), "Bandit could not scan some files"
+          for item in report["results"]:
+              print(
+                  item["test_id"],
+                  item["issue_severity"],
+                  item["issue_text"],
+              )
+          high = [
+              item for item in report["results"]
+              if item["issue_severity"] == "HIGH"
+          ]
+          print("Total findings:", len(report["results"]))
+          print("High severity:", len(high))
+          assert not high, "High-severity SAST findings detected"
+          PY
+
+      - name: Start Flask app
+        run: |
+          python app.py > security_reports/flask.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5000/api/users; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat security_reports/flask.log
+          exit 1
+
+      - name: Run API security checks
+        run: python security_checks.py
+
+      - name: Run ZAP active scan
+        run: |
+          chmod 777 security_reports
+          docker run --rm --network host \
+            -v "$PWD/security_reports:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-full-scan.py \
+            -t http://127.0.0.1:5000 \
+            -m 1 -T 5 -I \
+            -r zap_report.html \
+            -J zap_report.json
+
+      - name: Summarize ZAP findings
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(
+              Path("security_reports/zap_report.json").read_text()
+          )
+          alerts = [
+              alert
+              for site in report.get("site", [])
+              for alert in site.get("alerts", [])
+          ]
+          print("ZAP alert types:", len(alerts))
+          for alert in alerts:
+              print(alert["riskdesc"], "|", alert["name"])
+          high = [
+              alert for alert in alerts
+              if int(alert["riskcode"]) >= 3
+          ]
+          print("High-risk alerts:", len(high))
+          assert not high, "High-risk ZAP alerts require review"
+          PY
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: security_reports/
