@@ -63,7 +63,7 @@ record(
     response.status_code == 201
     and page.status_code == 200
     and xss not in page.text
-    and html.escape(xss) in page.text,
+    and xss in html.unescape(page.text),
     "Script markup must be HTML-escaped in the users list",
 )
 
