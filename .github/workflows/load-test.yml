@@ -1,0 +1,88 @@
+name: Lab4 Load Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "locustfile.py"
+      - "app.py"
+      - ".github/workflows/load-test.yml"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  load_test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install flask==3.1.0 locust==2.32.4
+
+      - name: Start Flask app
+        run: |
+          mkdir -p load_reports
+          python app.py > load_reports/flask.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5000/api/users; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat load_reports/flask.log
+          exit 1
+
+      - name: Run load test
+        run: |
+          locust -f locustfile.py \
+            --headless \
+            -u 50 \
+            -r 10 \
+            --run-time 1m \
+            --host=http://127.0.0.1:5000 \
+            --csv=load_reports/load_report \
+            --html=load_reports/load_report.html
+
+      - name: Check performance thresholds
+        run: |
+          python - <<'PY'
+          import csv
+
+          with open("load_reports/load_report_stats.csv", newline="") as f:
+              rows = list(csv.DictReader(f))
+
+          for method, limit in [("GET", 200), ("POST", 300)]:
+              row = next(r for r in rows if r["Type"] == method)
+              count = int(row["Request Count"])
+              average = float(row["Average Response Time"])
+              print(f"{method}: {count} requests, average {average:.2f} ms")
+              assert count > 0, f"No {method} requests"
+              assert average < limit, f"{method} exceeded {limit} ms"
+
+          total = next(r for r in rows if r["Name"] == "Aggregated")
+          count = int(total["Request Count"])
+          failures = int(total["Failure Count"])
+          assert count > 0
+          failure_rate = failures / count * 100
+          print(f"Failure rate: {failure_rate:.2f}%")
+          print(f"Requests/s: {total['Requests/s']}")
+          print(f"p95: {total['95%']} ms; p99: {total['99%']} ms")
+          assert failure_rate < 1, "Failure rate exceeded threshold"
+          PY
+
+      - name: Upload load reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: locust-report
+          path: load_reports/
